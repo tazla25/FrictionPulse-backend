@@ -7,43 +7,37 @@ app.use(express.json());
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Supabase-এর সাথে কানেকশন তৈরি
+// সুপাবেসের সাথে কানেকশন (Service Role Key লাগবে auth.users দেখার জন্য)
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// UptimeRobot-এর জন্য
 app.get('/ping', (req, res) => res.status(200).send('Server is awake! 🚀'));
 
-// Supabase থেকে ডেটা রিসিভ করা
 app.post('/webhook', async (req, res) => {
   try {
     const payload = req.body;
     const newRecord = payload.record; 
     
-    // ধরে নিচ্ছি উইজেটের ডেটাতে merchant_id আছে
-    const merchantId = newRecord.merchant_id;
+    // ফ্রন্টএন্ড থেকে আসা site_key
+    const siteKey = newRecord.site_key;
 
-    if (!merchantId) {
-      return res.status(400).send('Merchant ID is missing from the record');
+    if (!siteKey) {
+      return res.status(400).send('Site Key is missing from the record');
     }
 
-    // ১. ডাটাবেস থেকে নির্দিষ্ট মার্চেন্টের ইমেইল খুঁজে বের করা
-    const { data: merchant, error } = await supabase
-      .from('merchants') // তোমার মার্চেন্টদের টেবিলের নাম
-      .select('email')
-      .eq('id', merchantId)
-      .single();
+    // ১. Supabase Auth থেকে মার্চেন্টের ইমেইল খুঁজে বের করা
+    const { data: userData, error } = await supabase.auth.admin.getUserById(siteKey);
 
-    if (error || !merchant) {
-      console.error("Merchant not found in database:", error);
+    if (error || !userData || !userData.user) {
+      console.error("Merchant not found in auth.users:", error);
       return res.status(404).send('Merchant not found');
     }
 
-    const merchantEmail = merchant.email;
+    const merchantEmail = userData.user.email;
 
-    // ২. সরাসরি সেই মার্চেন্টের ইমেইলে নোটিফিকেশন পাঠানো
+    // ২. সরাসরি সেই নির্দিষ্ট মার্চেন্টের ইমেইলে নোটিফিকেশন পাঠানো
     await resend.emails.send({
       from: 'onboarding@resend.dev',
       to: merchantEmail,
