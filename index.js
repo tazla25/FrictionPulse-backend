@@ -5,7 +5,7 @@ const Sentry = require('@sentry/node');
 const winston = require('winston');
 
 // ─────────────────────────────────────────────────────────────────────────
--- 1. STARTUP CONFIGURATION & ENVIRONMENT VALIDATION
+// 1. STARTUP CONFIGURATION & ENVIRONMENT VALIDATION
 // ─────────────────────────────────────────────────────────────────────────
 const REQUIRED_ENV = [
   'SUPABASE_URL',
@@ -23,7 +23,7 @@ REQUIRED_ENV.forEach((envName) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
--- 2. STRUCTURED LOGGING INITIALIZATION (Winston)
+// 2. STRUCTURED LOGGING INITIALIZATION (Winston)
 // ─────────────────────────────────────────────────────────────────────────
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -38,7 +38,7 @@ const logger = winston.createLogger({
 });
 
 // ─────────────────────────────────────────────────────────────────────────
--- 3. SENTRY ERROR TRACKING INITIALIZATION
+// 3. SENTRY ERROR TRACKING INITIALIZATION
 // ─────────────────────────────────────────────────────────────────────────
 if (process.env.SENTRY_DSN) {
   Sentry.init({
@@ -70,7 +70,7 @@ const supabase = createClient(
 );
 
 // ─────────────────────────────────────────────────────────────────────────
--- 4. REPLAY PROTECTION (InMemory Capped Cache)
+// 4. REPLAY PROTECTION (InMemory Capped Cache)
 // ─────────────────────────────────────────────────────────────────────────
 const processedEventIds = new Set();
 const MAX_CACHE_SIZE = 10000;
@@ -82,7 +82,7 @@ setInterval(() => {
 }, CACHE_CLEANUP_INTERVAL);
 
 // ─────────────────────────────────────────────────────────────────────────
--- 5. SECURITY UTILITIES: HTML ESCAPING
+// 5. SECURITY UTILITIES: HTML ESCAPING
 // ─────────────────────────────────────────────────────────────────────────
 function escapeHtml(str) {
   if (!str) return '';
@@ -110,7 +110,7 @@ function maskEmail(email) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
--- 6. ROUTE DEFINITIONS
+// 6. ROUTE DEFINITIONS
 // ─────────────────────────────────────────────────────────────────────────
 
 app.get('/ping', (req, res) => {
@@ -119,7 +119,7 @@ app.get('/ping', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
--- 7. PRODUCTION-GRADE HEALTH CHECK ENDPOINT
+// 7. PRODUCTION-GRADE HEALTH CHECK ENDPOINT
 // ─────────────────────────────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
   const healthInfo = {
@@ -174,7 +174,7 @@ app.get('/health', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
--- 8. SECURE WEBHOOK & EMAIL ALERT DISPATCH ROUTE
+// 8. SECURE WEBHOOK & EMAIL ALERT DISPATCH ROUTE
 // ─────────────────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
