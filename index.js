@@ -283,7 +283,7 @@ app.post('/webhook', async (req, res) => {
     // F. Send Dynamic Email Alert via Resend
     logger.info('Dispatching email alert via Resend', { requestId, recipient: maskEmail(merchantEmail) });
     const emailResult = await resend.emails.send({
-      from: process.env.SENDER_EMAIL,
+      from: "onboarding@resend.dev",
       to: merchantEmail,
       subject: `🎉 New Lead Captured on ${safeDomain}!`,
       html: `
