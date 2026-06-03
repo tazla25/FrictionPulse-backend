@@ -10,12 +10,7 @@ const winston = require('winston');
 const REQUIRED_ENV = [
   'SUPABASE_URL',
   'SUPABASE_SERVICE_KEY',
-  'SMTP_HOST',
-  'SMTP_PORT',
-  'SMTP_USER',
-  'SMTP_PASS',
-  'WEBHOOK_SECRET',
-  'SENDER_EMAIL'
+  'WEBHOOK_SECRET'
 ];
 
 REQUIRED_ENV.forEach((envName) => {
@@ -64,15 +59,18 @@ if (process.env.SENTRY_DSN) {
 
 app.use(express.json());
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT, 10) || 587,
-  secure: parseInt(process.env.SMTP_PORT, 10) === 465, // true for 465, false for other ports
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  }
-});
+let transporter = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT, 10) || 587,
+    secure: parseInt(process.env.SMTP_PORT, 10) === 465, // true for 465, false for other ports
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    }
+  });
+}
 
 // Supabase administrative client using service key
 const supabase = createClient(
@@ -161,11 +159,16 @@ app.get('/health', async (req, res) => {
     healthInfo.services.auth = 'up';
 
     // C. Verify Email service SMTP connectivity
-    try {
-      await transporter.verify();
-      healthInfo.services.email_service = 'configured_active';
-    } catch (emailError) {
-      throw new Error(`SMTP connection failed: ${emailError.message}`);
+    if (transporter) {
+      try {
+        await transporter.verify();
+        healthInfo.services.email_service = 'configured_active';
+      } catch (emailError) {
+        logger.warn('SMTP verification failed', { error: emailError.message });
+        healthInfo.services.email_service = 'configured_error';
+      }
+    } else {
+      healthInfo.services.email_service = 'not_configured';
     }
 
     logger.info('Health status check passed', { services: healthInfo.services });
@@ -292,68 +295,78 @@ app.post('/webhook', async (req, res) => {
     const safePageUrl = escapeHtml(newRecord.page_url);
     const safeDomain = escapeHtml(siteData.domain);
 
-    // F. Send Dynamic Email Alert via Nodemailer (Gmail SMTP)
-    logger.info('Dispatching email alert via Gmail SMTP', { requestId, recipient: maskEmail(merchantEmail) });
-    try {
-      await transporter.sendMail({
-        from: process.env.SENDER_EMAIL,
-        to: merchantEmail,
-        subject: `🎉 New Lead Captured on ${safeDomain}!`,
-        html: `
-          <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e1e8ed; border-radius: 16px; background-color: #ffffff;">
-            <div style="text-align: center; margin-bottom: 24px;">
-              <div style="background-color: #FFF5F2; display: inline-block; padding: 12px; border-radius: 50%; margin-bottom: 12px;">
-                <span style="font-size: 32px;">🎉</span>
+    // F. Send Dynamic Email Alert (TEMPORARILY DISABLED)
+    const ENABLE_EMAIL_NOTIFICATIONS = false;
+
+    if (ENABLE_EMAIL_NOTIFICATIONS && transporter) {
+      logger.info('Dispatching email alert via Gmail SMTP', { requestId, recipient: maskEmail(merchantEmail) });
+      try {
+        await transporter.sendMail({
+          from: process.env.SENDER_EMAIL,
+          to: merchantEmail,
+          subject: `🎉 New Lead Captured on ${safeDomain}!`,
+          html: `
+            <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e1e8ed; border-radius: 16px; background-color: #ffffff;">
+              <div style="text-align: center; margin-bottom: 24px;">
+                <div style="background-color: #FFF5F2; display: inline-block; padding: 12px; border-radius: 50%; margin-bottom: 12px;">
+                  <span style="font-size: 32px;">🎉</span>
+                </div>
+                <h2 style="color: #FF4E11; font-size: 24px; margin: 0; font-weight: 700;">New Lead Captured!</h2>
+                <p style="color: #5f6368; font-size: 14px; margin: 6px 0 0 0;">FrictionPulse Widget Alert</p>
               </div>
-              <h2 style="color: #FF4E11; font-size: 24px; margin: 0; font-weight: 700;">New Lead Captured!</h2>
-              <p style="color: #5f6368; font-size: 14px; margin: 6px 0 0 0;">FrictionPulse Widget Alert</p>
+              
+              <p style="font-size: 16px; line-height: 1.6; color: #202124; margin-bottom: 24px;">
+                A customer visited <strong>${safeDomain}</strong>, encountered a hesitation, and requested to be contacted:
+              </p>
+              
+              <div style="background-color: #f8f9fa; padding: 24px; border-radius: 12px; margin-bottom: 24px; border: 1px solid #f1f3f4;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr style="border-bottom: 1px solid #f1f3f4;">
+                    <td style="padding: 10px 0; font-weight: 600; color: #5f6368; width: 120px; font-size: 14px;">Email:</td>
+                    <td style="padding: 10px 0; color: #202124; font-size: 14px; word-break: break-all;"><strong>${safeEmail || 'Not provided'}</strong></td>
+                  </tr>
+                  <tr style="border-bottom: 1px solid #f1f3f4;">
+                    <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Phone:</td>
+                    <td style="padding: 10px 0; color: #202124; font-size: 14px;"><strong>${safePhone || 'Not provided'}</strong></td>
+                  </tr>
+                  <tr style="border-bottom: 1px solid #f1f3f4;">
+                    <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Objection:</td>
+                    <td style="padding: 10px 0; color: #202124; font-size: 14px;">${safeObjection || 'General hesitation'}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Page URL:</td>
+                    <td style="padding: 10px 0; color: #0056b3; font-size: 13px; word-break: break-all;">${safePageUrl || 'Unknown'}</td>
+                  </tr>
+                </table>
+              </div>
+              
+              <p style="font-size: 12px; color: #70757a; margin-top: 32px; border-top: 1px solid #e1e8ed; padding-top: 16px; text-align: center;">
+                This email was sent dynamically to you by FrictionPulse because a visitor triggered a widget event.
+              </p>
             </div>
-            
-            <p style="font-size: 16px; line-height: 1.6; color: #202124; margin-bottom: 24px;">
-              A customer visited <strong>${safeDomain}</strong>, encountered a hesitation, and requested to be contacted:
-            </p>
-            
-            <div style="background-color: #f8f9fa; padding: 24px; border-radius: 12px; margin-bottom: 24px; border: 1px solid #f1f3f4;">
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr style="border-bottom: 1px solid #f1f3f4;">
-                  <td style="padding: 10px 0; font-weight: 600; color: #5f6368; width: 120px; font-size: 14px;">Email:</td>
-                  <td style="padding: 10px 0; color: #202124; font-size: 14px; word-break: break-all;"><strong>${safeEmail || 'Not provided'}</strong></td>
-                </tr>
-                <tr style="border-bottom: 1px solid #f1f3f4;">
-                  <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Phone:</td>
-                  <td style="padding: 10px 0; color: #202124; font-size: 14px;"><strong>${safePhone || 'Not provided'}</strong></td>
-                </tr>
-                <tr style="border-bottom: 1px solid #f1f3f4;">
-                  <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Objection:</td>
-                  <td style="padding: 10px 0; color: #202124; font-size: 14px;">${safeObjection || 'General hesitation'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 10px 0; font-weight: 600; color: #5f6368; font-size: 14px;">Page URL:</td>
-                  <td style="padding: 10px 0; color: #0056b3; font-size: 13px; word-break: break-all;">${safePageUrl || 'Unknown'}</td>
-                </tr>
-              </table>
-            </div>
-            
-            <p style="font-size: 12px; color: #70757a; margin-top: 32px; border-top: 1px solid #e1e8ed; padding-top: 16px; text-align: center;">
-              This email was sent dynamically to you by FrictionPulse because a visitor triggered a widget event.
-            </p>
-          </div>
-        `
+          `
+        });
+        logger.info('Email dispatch successful');
+      } catch (emailError) {
+        logger.error('Nodemailer SMTP returned delivery error', { requestId, error: emailError.message });
+        // Email delivery is optional and should not prevent a successful webhook response
+      }
+    } else {
+      logger.info('Email alerts are temporarily disabled or SMTP not configured; skipping email dispatch.', {
+        emailNotificationsEnabled: ENABLE_EMAIL_NOTIFICATIONS,
+        hasTransporter: !!transporter
       });
-    } catch (emailError) {
-      logger.error('Nodemailer SMTP returned delivery error', { requestId, error: emailError.message });
-      return res.status(502).json({ error: 'Failed to deliver merchant notification email' });
     }
 
-    // Structured Business-Event Logging: Log successful delivery
-    logger.info('Business Event: Lead alert email delivered', {
+    // Structured Business-Event Logging: Log successful saving and dashboard notification creation
+    logger.info('Business Event: Dashboard notification created for lead', {
       requestId,
       siteKey,
       leadId: newRecord.id,
       domain: siteData.domain
     });
 
-    return res.status(200).json({ status: 'Success', message: 'Notification email successfully dispatched' });
+    return res.status(200).json({ status: 'Success', message: 'Lead saved and dashboard notification created' });
   } catch (error) {
     logger.error('Unhandled webhook exception caught', { requestId, error: error.message, stack: error.stack });
     
@@ -380,12 +393,16 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   logger.info('Production Server started', { port: PORT });
   
-  // Verify SMTP Connection at startup
-  logger.info('Verifying SMTP connection...');
-  try {
-    await transporter.verify();
-    logger.info('SMTP connection successfully verified at startup');
-  } catch (error) {
-    logger.error('SMTP connection verification failed at startup', { error: error.message, stack: error.stack });
+  // Verify SMTP Connection at startup (if configured)
+  if (transporter) {
+    logger.info('Verifying SMTP connection...');
+    try {
+      await transporter.verify();
+      logger.info('SMTP connection successfully verified at startup');
+    } catch (error) {
+      logger.error('SMTP connection verification failed at startup', { error: error.message, stack: error.stack });
+    }
+  } else {
+    logger.info('SMTP connection verification skipped: no SMTP provider configured');
   }
 });
