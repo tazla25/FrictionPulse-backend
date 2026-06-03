@@ -3,6 +3,8 @@ const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 const Sentry = require('@sentry/node');
 const winston = require('winston');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
 
 // ─────────────────────────────────────────────────────────────────────────
 // 1. STARTUP CONFIGURATION & ENVIRONMENT VALIDATION
@@ -17,6 +19,23 @@ REQUIRED_ENV.forEach((envName) => {
   if (!process.env[envName]) {
     console.error(`[FATAL ERROR] Missing required environment variable: ${envName}`);
     process.exit(1);
+  }
+});
+
+// Razorpay Environment Variables validation with fallback warnings
+const RAZORPAY_ENV = [
+  { key: 'RAZORPAY_KEY_ID', fallback: 'mock_key_id' },
+  { key: 'RAZORPAY_KEY_SECRET', fallback: 'mock_key_secret' },
+  { key: 'RAZORPAY_PLAN_STARTER_ID', fallback: 'mock_plan_starter_id' },
+  { key: 'RAZORPAY_PLAN_GROWTH_ID', fallback: 'mock_plan_growth_id' },
+  { key: 'RAZORPAY_PLAN_PRO_ID', fallback: 'mock_plan_pro_id' },
+  { key: 'RAZORPAY_WEBHOOK_SECRET', fallback: 'mock_webhook_secret' }
+];
+
+RAZORPAY_ENV.forEach(({ key, fallback }) => {
+  if (!process.env[key]) {
+    console.warn(`[WARNING] Missing Razorpay environment variable: ${key}. Falling back to mock/warning value.`);
+    process.env[key] = fallback;
   }
 });
 
@@ -57,7 +76,11 @@ if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.tracingHandler());
 }
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
 
 let transporter = null;
 if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
@@ -377,6 +400,415 @@ app.post('/webhook', async (req, res) => {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// 8.5. RAZORPAY WEBHOOK ENDPOINT
+// ─────────────────────────────────────────────────────────────────────────
+app.post('/webhook/razorpay', async (req, res) => {
+  const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
+  logger.info('Razorpay webhook execution started', { requestId });
+
+  try {
+    const signature = req.headers['x-razorpay-signature'];
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const isMockSecret = !secret || secret === 'mock_webhook_secret';
+
+    if (!isMockSecret) {
+      if (!signature) {
+        logger.warn('Unauthorized Razorpay webhook request: missing signature header', { requestId });
+        return res.status(400).json({ error: 'Bad Request: Missing signature' });
+      }
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(req.rawBody || '')
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        logger.warn('Forbidden Razorpay webhook request: signature mismatch', { requestId });
+        return res.status(400).json({ error: 'Bad Request: Invalid webhook signature' });
+      }
+    } else {
+      logger.info('Skipping signature check for mock webhook secret', { requestId });
+    }
+
+    const payload = req.body;
+    if (!payload || typeof payload !== 'object') {
+      logger.warn('Bad request payload: body is empty or not an object', { requestId });
+      return res.status(400).json({ error: 'Bad Request: Invalid payload body' });
+    }
+
+    const eventType = payload.event;
+    const supportedEvents = [
+      'subscription.activated',
+      'subscription.charged',
+      'subscription.cancelled',
+      'subscription.pending',
+      'subscription.halted'
+    ];
+
+    if (!supportedEvents.includes(eventType)) {
+      logger.info('Received unsupported Razorpay event type', { requestId, eventType });
+      return res.status(200).json({ received: true, ignored: true });
+    }
+
+    const notes = payload.payload?.subscription?.entity?.notes || 
+                  payload.payload?.payment?.entity?.notes || 
+                  {};
+    const userId = notes.user_id;
+
+    // Log the event in billing_events table
+    const { error: eventLogError } = await supabase
+      .from('billing_events')
+      .insert({
+        user_id: userId || null,
+        event_type: eventType,
+        processor: 'razorpay',
+        payload: payload
+      });
+
+    if (eventLogError) {
+      logger.error('Failed to log Razorpay webhook event to billing_events', {
+        requestId,
+        error: eventLogError.message,
+        eventType,
+        userId
+      });
+    } else {
+      logger.info('Logged Razorpay webhook event to billing_events', {
+        requestId,
+        eventType,
+        userId
+      });
+    }
+
+    if (!userId) {
+      logger.warn('No user_id found in notes. Skipping subscription upsert.', { requestId, eventType });
+      return res.status(200).json({ success: true, message: 'Event logged but subscription upsert skipped (no user_id)' });
+    }
+
+    const entity = payload.payload?.subscription?.entity || 
+                   payload.payload?.payment?.entity || 
+                   {};
+    const subscriptionId = payload.payload?.subscription?.entity?.id || entity.id || null;
+
+    let status;
+    let planTier;
+    let currentPeriodEnd;
+
+    if (eventType === 'subscription.activated' || eventType === 'subscription.charged') {
+      status = 'active';
+      planTier = notes.plan_tier || 'starter';
+      if (entity.current_end) {
+        currentPeriodEnd = new Date(entity.current_end * 1000).toISOString();
+      } else {
+        currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      }
+    } else if (eventType === 'subscription.cancelled') {
+      status = 'canceled';
+      planTier = 'free';
+    } else if (eventType === 'subscription.pending') {
+      status = 'past_due';
+      planTier = notes.plan_tier || 'free';
+    } else if (eventType === 'subscription.halted') {
+      status = 'halted';
+      planTier = 'free';
+    }
+
+    const upsertData = {
+      user_id: userId,
+      plan_tier: planTier,
+      status: status,
+      updated_at: new Date().toISOString()
+    };
+
+    if (subscriptionId) {
+      upsertData.razorpay_subscription_id = subscriptionId;
+    }
+
+    if (currentPeriodEnd) {
+      upsertData.current_period_end = currentPeriodEnd;
+    }
+
+    logger.info('Upserting billing subscription from webhook', {
+      requestId,
+      userId,
+      subscriptionId,
+      planTier,
+      status,
+      currentPeriodEnd
+    });
+
+    const { error: dbError } = await supabase
+      .from('billing_subscriptions')
+      .upsert(upsertData, { onConflict: 'user_id' });
+
+    if (dbError) {
+      logger.error('Failed to upsert billing subscription from webhook', {
+        requestId,
+        userId,
+        error: dbError.message
+      });
+      throw new Error(`Database upsert failed: ${dbError.message}`);
+    }
+
+    logger.info('Billing subscription upserted successfully from webhook', {
+      requestId,
+      userId
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Subscription updated successfully'
+    });
+
+  } catch (error) {
+    logger.error('Unhandled Razorpay webhook exception caught', {
+      requestId,
+      error: error.message,
+      stack: error.stack
+    });
+
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(error);
+    }
+
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 9. CREATE SUBSCRIPTION ENDPOINT
+// ─────────────────────────────────────────────────────────────────────────
+app.post('/api/payments/create-subscription', async (req, res) => {
+  const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
+  logger.info('Create subscription request started', { requestId });
+
+  try {
+    // A. Bearer Token Authentication
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      logger.warn('Unauthorized subscription request: missing or invalid authorization header', { requestId });
+      return res.status(401).json({ error: 'Unauthorized: Missing or invalid token format' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      logger.warn('Unauthorized subscription request: invalid user token', { 
+        requestId, 
+        error: authError ? authError.message : 'No user found' 
+      });
+      return res.status(401).json({ error: 'Unauthorized: Invalid authentication token' });
+    }
+
+    // B. Payload Validation
+    const { planId } = req.body;
+    if (!planId || !['starter', 'growth', 'pro'].includes(planId)) {
+      logger.warn('Bad subscription request: invalid planId', { requestId, planId });
+      return res.status(400).json({ error: 'Bad Request: Invalid or missing planId. Must be "starter", "growth", or "pro".' });
+    }
+
+    // C. Mock Mode Check
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    if (keyId === 'mock_key_id' || (keyId && keyId.startsWith('mock_'))) {
+      const randomString = Math.random().toString(36).substring(2, 15);
+      const mockResponse = {
+        id: `sub_mock_${randomString}`,
+        plan_id: planId,
+        status: 'created',
+        user_id: user.id,
+        mock: true
+      };
+      logger.info('Mock subscription generated', { requestId, planId, userId: user.id });
+      return res.status(200).json(mockResponse);
+    }
+
+    // D. Real Mode Execution
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    const razorpay = new Razorpay({
+      key_id: keyId,
+      key_secret: keySecret
+    });
+
+    let planEnvKey;
+    if (planId === 'starter') {
+      planEnvKey = 'RAZORPAY_PLAN_STARTER_ID';
+    } else if (planId === 'growth') {
+      planEnvKey = 'RAZORPAY_PLAN_GROWTH_ID';
+    } else if (planId === 'pro') {
+      planEnvKey = 'RAZORPAY_PLAN_PRO_ID';
+    }
+
+    const razorpayPlanId = process.env[planEnvKey];
+    if (!razorpayPlanId) {
+      logger.error('Razorpay plan ID environment variable not set', { requestId, planEnvKey });
+      return res.status(500).json({ error: `Internal Server Error: Missing configuration for ${planId}` });
+    }
+
+    const subscriptionOptions = {
+      plan_id: razorpayPlanId,
+      total_count: 120, // 10 years (monthly)
+      quantity: 1,
+      customer_notify: 1,
+      notes: {
+        user_id: user.id,
+        plan_tier: planId
+      }
+    };
+
+    logger.info('Initiating Razorpay API subscription creation', { 
+      requestId, 
+      planId, 
+      razorpayPlanId 
+    });
+
+    const subscription = await razorpay.subscriptions.create(subscriptionOptions);
+    
+    logger.info('Razorpay subscription created successfully', { 
+      requestId, 
+      subscriptionId: subscription.id 
+    });
+
+    const responsePayload = Object.assign({}, subscription, { razorpay_key_id: keyId });
+    return res.status(200).json(responsePayload);
+
+  } catch (error) {
+    logger.error('Unhandled subscription creation exception caught', { 
+      requestId, 
+      error: error.message, 
+      stack: error.stack 
+    });
+
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(error);
+    }
+
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 10. VERIFY SUBSCRIPTION ENDPOINT
+// ─────────────────────────────────────────────────────────────────────────
+app.post('/api/payments/verify-subscription', async (req, res) => {
+  const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
+  logger.info('Verify subscription request started', { requestId });
+
+  try {
+    // A. Bearer Token Authentication
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      logger.warn('Unauthorized verification request: missing or invalid authorization header', { requestId });
+      return res.status(401).json({ error: 'Unauthorized: Missing or invalid token format' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      logger.warn('Unauthorized verification request: invalid user token', { 
+        requestId, 
+        error: authError ? authError.message : 'No user found' 
+      });
+      return res.status(401).json({ error: 'Unauthorized: Invalid authentication token' });
+    }
+
+    // B. Request Payload Validation
+    const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature, planId } = req.body;
+    if (!razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature || !planId) {
+      logger.warn('Bad verification request: missing parameters', { 
+        requestId, 
+        hasPaymentId: !!razorpay_payment_id,
+        hasSubId: !!razorpay_subscription_id,
+        hasSig: !!razorpay_signature,
+        hasPlanId: !!planId 
+      });
+      return res.status(400).json({ error: 'Bad Request: Missing required parameters' });
+    }
+
+    const isMock = razorpay_subscription_id.startsWith('sub_mock_');
+
+    if (!isMock) {
+      // C. Real Verification
+      const secret = process.env.RAZORPAY_KEY_SECRET;
+      if (!secret) {
+        logger.error('Razorpay key secret not configured for verification', { requestId });
+        return res.status(500).json({ error: 'Internal Server Error: Payment verification misconfigured' });
+      }
+      const body = razorpay_payment_id + '|' + razorpay_subscription_id;
+      const expectedSignature = crypto.createHmac('sha256', secret).update(body).digest('hex');
+
+      if (razorpay_signature !== expectedSignature) {
+        logger.warn('Signature mismatch for verification request', { 
+          requestId, 
+          subscriptionId: razorpay_subscription_id 
+        });
+        return res.status(400).json({ error: 'Bad Request: Invalid payment signature' });
+      }
+    } else {
+      logger.info('Skipping signature check for mock subscription', { 
+        requestId, 
+        subscriptionId: razorpay_subscription_id 
+      });
+    }
+
+    // D. Database Sync / Upsert
+    const currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    
+    logger.info('Upserting billing subscription', { 
+      requestId, 
+      userId: user.id, 
+      subscriptionId: razorpay_subscription_id, 
+      planId, 
+      currentPeriodEnd 
+    });
+
+    const { error: dbError } = await supabase
+      .from('billing_subscriptions')
+      .upsert({
+        user_id: user.id,
+        razorpay_subscription_id: razorpay_subscription_id,
+        plan_tier: planId,
+        status: 'active',
+        current_period_end: currentPeriodEnd,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' });
+
+    if (dbError) {
+      logger.error('Failed to upsert billing subscription', { 
+        requestId, 
+        userId: user.id, 
+        error: dbError.message 
+      });
+      throw new Error(`Database upsert failed: ${dbError.message}`);
+    }
+
+    logger.info('Billing subscription upserted successfully', { 
+      requestId, 
+      userId: user.id 
+    });
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Subscription verified and recorded successfully' 
+    });
+
+  } catch (error) {
+    logger.error('Unhandled verification exception caught', { 
+      requestId, 
+      error: error.message, 
+      stack: error.stack 
+    });
+
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(error);
+    }
+
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 
 // Sentry error handler middleware must be before any other error middleware
 if (process.env.SENTRY_DSN) {
