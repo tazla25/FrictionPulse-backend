@@ -598,6 +598,8 @@ app.post(['/api/payments/create-subscription', '/api/create-subscription'], asyn
   const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
   logger.info('Create subscription request started', { requestId });
 
+  let user = null;
+
   try {
     // A. Bearer Token Authentication
     const authHeader = req.headers['authorization'];
@@ -607,7 +609,9 @@ app.post(['/api/payments/create-subscription', '/api/create-subscription'], asyn
     }
 
     const token = authHeader.split(' ')[1];
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const authResult = await supabase.auth.getUser(token);
+    user = authResult.data ? authResult.data.user : null;
+    const authError = authResult.error;
     
     if (authError || !user) {
       logger.warn('Unauthorized subscription request: invalid user token', { 
@@ -689,17 +693,33 @@ app.post(['/api/payments/create-subscription', '/api/create-subscription'], asyn
     return res.status(200).json(responsePayload);
 
   } catch (error) {
+    console.error("[DETAILED EXCEPTION] inside POST /api/create-subscription:");
+    console.error("- Request Body:", JSON.stringify(req.body));
+    console.error("- planId:", req.body ? req.body.planId : 'undefined');
+    console.error("- User ID:", (typeof user !== 'undefined' && user) ? user.id : 'undefined');
+    console.error("- Supabase User Object:", (typeof user !== 'undefined' && user) ? JSON.stringify(user) : 'undefined');
+    console.error("- Error Message:", error.message);
+    console.error("- Error Stack:", error.stack);
+
     logger.error('Unhandled subscription creation exception caught', { 
       requestId, 
       error: error.message, 
-      stack: error.stack 
+      stack: error.stack,
+      body: req.body,
+      userId: (typeof user !== 'undefined' && user) ? user.id : null
     });
 
     if (process.env.SENTRY_DSN) {
       Sentry.captureException(error);
     }
 
-    return res.status(500).json({ error: 'Internal Server Error' });
+    return res.status(500).json({ 
+      error: 'Internal Server Error', 
+      details: { 
+        message: error.message, 
+        stack: error.stack 
+      } 
+    });
   }
 });
 
@@ -714,6 +734,9 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
   const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
   logger.info('Verify subscription request started', { requestId });
 
+  let user = null;
+  let dbError = null;
+
   try {
     // A. Bearer Token Authentication
     const authHeader = req.headers['authorization'];
@@ -723,7 +746,9 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
     }
 
     const token = authHeader.split(' ')[1];
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const authResult = await supabase.auth.getUser(token);
+    user = authResult.data ? authResult.data.user : null;
+    const authError = authResult.error;
     
     if (authError || !user) {
       logger.warn('Unauthorized verification request: invalid user token', { 
@@ -783,7 +808,7 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
       currentPeriodEnd 
     });
 
-    const { error: dbError } = await supabase
+    const dbUpsertResult = await supabase
       .from('billing_subscriptions')
       .upsert({
         user_id: user.id,
@@ -793,6 +818,7 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
         current_period_end: currentPeriodEnd,
         updated_at: new Date().toISOString()
       }, { onConflict: 'user_id' });
+    dbError = dbUpsertResult.error;
 
     if (dbError) {
       logger.error('Failed to upsert billing subscription', { 
@@ -814,17 +840,34 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
     });
 
   } catch (error) {
+    console.error("[DETAILED EXCEPTION] inside POST /api/verify-subscription:");
+    console.error("- Request Body:", JSON.stringify(req.body));
+    console.error("- planId:", req.body ? req.body.planId : 'undefined');
+    console.error("- User ID:", (typeof user !== 'undefined' && user) ? user.id : 'undefined');
+    console.error("- Supabase User Object:", (typeof user !== 'undefined' && user) ? JSON.stringify(user) : 'undefined');
+    console.error("- Database Update Result (error parameter):", (typeof dbError !== 'undefined' && dbError) ? JSON.stringify(dbError) : 'N/A');
+    console.error("- Error Message:", error.message);
+    console.error("- Error Stack:", error.stack);
+
     logger.error('Unhandled verification exception caught', { 
       requestId, 
       error: error.message, 
-      stack: error.stack 
+      stack: error.stack,
+      body: req.body,
+      userId: (typeof user !== 'undefined' && user) ? user.id : null
     });
 
     if (process.env.SENTRY_DSN) {
       Sentry.captureException(error);
     }
 
-    return res.status(500).json({ error: 'Internal Server Error' });
+    return res.status(500).json({ 
+      error: 'Internal Server Error', 
+      details: { 
+        message: error.message, 
+        stack: error.stack 
+      } 
+    });
   }
 });
 

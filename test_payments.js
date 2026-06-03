@@ -21,6 +21,9 @@ const mockSupabase = http.createServer((req, res) => {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Invalid token' }));
     }
+  } else if (req.url.startsWith('/rest/v1/billing_subscriptions')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify([]));
   } else {
     res.writeHead(404).end();
   }
@@ -185,6 +188,47 @@ mockSupabase.listen(MOCK_SUPABASE_PORT, () => {
 
       assert.strictEqual(resWebhook.status, expectedStatus, `Webhook should return ${expectedStatus}`);
       console.log(`✓ Test 7 Passed: webhook/razorpay returned expected status ${expectedStatus}`);
+
+      // --- Test 8: Check successful mock payment creation and verification ---
+      console.log('Running Test 8: Check successful mock payment creation and verification...');
+      
+      // A. Create Mock Subscription
+      const resCreateSub = await fetch(`${BASE_URL}/api/payments/create-subscription`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid_test_token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ planId: 'starter' })
+      });
+      
+      assert.strictEqual(resCreateSub.status, 200, 'Mock subscription creation should return 200');
+      const createSubJson = await resCreateSub.json();
+      assert.strictEqual(createSubJson.mock, true, 'Created subscription should have mock: true');
+      console.log('✓ Part A: Mock subscription created successfully:', createSubJson.id);
+
+      // B. Verify Mock Subscription
+      const resVerifyMock = await fetch(`${BASE_URL}/api/payments/verify-subscription`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid_test_token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          razorpay_payment_id: 'pay_mock_' + Math.random().toString(36).substr(2, 9),
+          razorpay_subscription_id: createSubJson.id,
+          razorpay_signature: 'mock_signature_from_client',
+          planId: 'starter'
+        })
+      });
+
+      console.log('Verify response status:', resVerifyMock.status);
+      const verifyJson = await resVerifyMock.json();
+      console.log('Verify response JSON:', verifyJson);
+      
+      assert.strictEqual(resVerifyMock.status, 200, 'Mock payment verification should return 200');
+      assert.strictEqual(verifyJson.success, true, 'Verification should be successful');
+      console.log('✓ Part B: Mock subscription verified successfully!');
 
       console.log('\n======================================');
       console.log('All tests passed successfully! 🎉');
