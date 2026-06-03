@@ -579,7 +579,11 @@ app.post('/webhook/razorpay', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────
 // 9. CREATE SUBSCRIPTION ENDPOINT
 // ─────────────────────────────────────────────────────────────────────────
-app.post('/api/payments/create-subscription', async (req, res) => {
+app.get(['/api/payments/create-subscription', '/api/create-subscription'], (req, res) => {
+  return res.status(405).json({ error: 'Method Not Allowed. Please send a POST request containing your authentication token and planId.' });
+});
+
+app.post(['/api/payments/create-subscription', '/api/create-subscription'], async (req, res) => {
   const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
   logger.info('Create subscription request started', { requestId });
 
@@ -691,7 +695,11 @@ app.post('/api/payments/create-subscription', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────
 // 10. VERIFY SUBSCRIPTION ENDPOINT
 // ─────────────────────────────────────────────────────────────────────────
-app.post('/api/payments/verify-subscription', async (req, res) => {
+app.get(['/api/payments/verify-subscription', '/api/verify-subscription'], (req, res) => {
+  return res.status(405).json({ error: 'Method Not Allowed. Please send a POST request containing your authentication token, payment details, and planId.' });
+});
+
+app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], async (req, res) => {
   const requestId = Math.random().toString(36).substr(2, 9).toUpperCase();
   logger.info('Verify subscription request started', { requestId });
 
