@@ -76,6 +76,17 @@ if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.tracingHandler());
 }
 
+// Enable CORS for frontend requests
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Authorization, Content-Type, apikey");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
