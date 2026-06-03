@@ -377,4 +377,15 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => logger.info('Production Server started', { port: PORT }));
+app.listen(PORT, async () => {
+  logger.info('Production Server started', { port: PORT });
+  
+  // Verify SMTP Connection at startup
+  logger.info('Verifying SMTP connection...');
+  try {
+    await transporter.verify();
+    logger.info('SMTP connection successfully verified at startup');
+  } catch (error) {
+    logger.error('SMTP connection verification failed at startup', { error: error.message, stack: error.stack });
+  }
+});
