@@ -129,8 +129,8 @@ setInterval(() => {
 // ─────────────────────────────────────────────────────────────────────────
 function escapeHtml(str) {
   if (!str) return '';
-  if (typeof str !== 'string') return String(str);
-  return str.replace(/[&<>"']/g, (m) => {
+  const stringified = String(str);
+  return stringified.replace(/[&<>"']/g, (m) => {
     switch (m) {
       case '&': return '&amp;';
       case '<': return '&lt;';
@@ -623,7 +623,7 @@ app.post(['/api/payments/create-subscription', '/api/create-subscription'], asyn
 
     // B. Payload Validation
     const { planId } = req.body;
-    if (!planId || !['starter', 'growth', 'pro'].includes(planId)) {
+    if (typeof planId !== 'string' || !planId || !['starter', 'growth', 'pro'].includes(planId)) {
       logger.warn('Bad subscription request: invalid planId', { requestId, planId });
       return res.status(400).json({ error: 'Bad Request: Invalid or missing planId. Must be "starter", "growth", or "pro".' });
     }
@@ -760,7 +760,13 @@ app.post(['/api/payments/verify-subscription', '/api/verify-subscription'], asyn
 
     // B. Request Payload Validation
     const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature, planId } = req.body;
-    if (!razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature || !planId) {
+    if (
+      typeof razorpay_payment_id !== 'string' ||
+      typeof razorpay_subscription_id !== 'string' ||
+      typeof razorpay_signature !== 'string' ||
+      typeof planId !== 'string' ||
+      !razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature || !planId
+    ) {
       logger.warn('Bad verification request: missing parameters', { 
         requestId, 
         hasPaymentId: !!razorpay_payment_id,
