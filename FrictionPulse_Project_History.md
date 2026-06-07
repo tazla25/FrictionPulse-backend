@@ -77,6 +77,12 @@ The system is composed of:
   * **Fix**: Implemented the server-side `cancel-subscription` Supabase Edge Function to interface directly with the Razorpay API to cancel active mandates immediately (`cancel_at_cycle_end: 0`). Refactored `dashboard.html`'s downgrade logic to invoke this Edge Function instead of performing a client-side direct database `PATCH`.
 * **Final Security Hardening Merged**:
   * **Fix**: Enforced a strict Content Security Policy (CSP) header across `dashboard.html`, `demo.html`, `index.html`, and `pricing.html` (restricting resources to self, Vercel, Supabase, Google Fonts, and Razorpay). Secured dynamic objection rendering in `dashboard.html` by shifting from `.innerHTML` to safe DOM nodes (`createElement`, `textContent`). Added regex-based email input validation to `widget.js` before submitting captured lead/feedback events.
+* **Final Database & CI Hardening Pass**:
+  * **Fix**: Tightened public `INSERT` policies on `leads`, `feedback`, `widget_views`, and `votes` tables to require a valid `site_key` verified via `public.validate_site_key(site_key)` instead of allowing unrestricted `true` inserts.
+  * **Fix**: Hardened `support_messages` RLS policies by dropping anonymous `INSERT` permissions entirely and restricting authenticated `INSERT` permissions to enforce `auth.email() = merchant_email`.
+  * **Fix**: Set explicit `search_path = public` on all public database triggers and helper functions (`check_lead_limit`, `update_updated_at_column`, `enforce_lead_quota_resilient`, `check_domain_limit`, `check_site_limit`, `validate_site_key`), resolving all mutable `search_path` warnings in the Supabase Security Advisor.
+  * **Fix**: Dropped the unused development table `test_table` to clean up RLS linter warnings.
+  * **CI/CD**: Added GitHub Actions CI workflows for automated linting, syntax checking, and dependency validation in both repositories.
 
 ---
 
